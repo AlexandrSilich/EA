@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                           KEYLEVEL_TRADER.mq4    |
 //|                        Multi-Timeframe Reverse Harmonic SAR EA   |
-//|                        V1.0: Inverse Logic, Fixed 1:2 SL, Tiers  |
+//|                        V1.1: Fix comment parse, MaxHedgeOrders   |
 //+------------------------------------------------------------------+
 #property copyright "KEYLEVEL TRADER Strategy"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 
@@ -19,6 +19,10 @@ extern double DailyProfitTargetPercent = 5.0;   // Target % (e.g., 5.0 means 5% 
 extern int    MagicNumber         = 20240625; // New Magic Number for KEYLEVEL
 extern int    Slippage            = 3;
 extern double MaxSpreadPips       = 3.0;      // Max spread allowed in pips
+
+// FIX #2: Limit on hedge (counter-direction) orders per pair/TF
+// Set to 1 to allow only 1 hedge order. Set to 0 to disable hedging entirely.
+extern int    MaxHedgeOrders      = 1;
 
 
 // --- GLOBAL VARIABLES ---
@@ -41,7 +45,7 @@ datetime LastTradeTime[27][4];
 int OnInit()
 {
    ArrayInitialize(LastTradeTime, 0);
-   Print("KEYLEVEL_TRADER 1.0 Initialized. Inverse Logic Active.");
+   Print("KEYLEVEL_TRADER 1.1 Initialized. Inverse Logic Active.");
    return(INIT_SUCCEEDED);
 }
 void OnDeinit(const int reason) {}
@@ -174,7 +178,10 @@ bool CheckTrigger(string pair, int tf, bool isBuy)
 
 
 //+------------------------------------------------------------------+
-//| TRADE COUNTING (FOR HEDGING / SECOND ORDER)                      |
+//| TRADE COUNTING                                                   |
+//| FIX #1: Comment format changed to KL_TF_TYPE (e.g. KL_60_0)    |
+//|   OLD: KL_type_tf -> StringSubstr gave type, not TF             |
+//|   NEW: KL_tf_type -> StringSubstr correctly extracts TF         |
 //+------------------------------------------------------------------+
 int CountTrades(string pair, int tf, int type)
 {
@@ -185,11 +192,13 @@ int CountTrades(string pair, int tf, int type)
       if(OrderSymbol() != pair) continue;
       
       string comment = OrderComment();
-      int pos1 = StringFind(comment, "_");
-      int pos2 = StringFind(comment, "_", pos1 + 1);
+      // Format: KL_<TF>_<TYPE>  e.g. KL_60_0 or KL_30_1
+      int pos1 = StringFind(comment, "_");          // position of first _
+      int pos2 = StringFind(comment, "_", pos1 + 1); // position of second _
       if(pos1 > 0 && pos2 > 0) {
-         int orderTf = (int)StringToInteger(StringSubstr(comment, pos1 + 1, pos2 - pos1 - 1));
-         if(orderTf == tf && OrderType() == type) count++;
+         int orderTf   = (int)StringToInteger(StringSubstr(comment, pos1 + 1, pos2 - pos1 - 1)); // TF value
+         int orderType = (int)StringToInteger(StringSubstr(comment, pos2 + 1));                  // type value
+         if(orderTf == tf && orderType == type && OrderType() == type) count++;
       }
    }
    return count;
@@ -230,17 +239,24 @@ void OnTick()
          bool triggerSell = CheckTrigger(pair, tf, false);
 
 
+         // FIX #2: Hedge guard — open counter-direction only if hedge count < MaxHedgeOrders
          if(scanBuy && triggerBuy) {
-            int buys = CountTrades(pair, tf, OP_BUY);
+            int buys  = CountTrades(pair, tf, OP_BUY);
             int sells = CountTrades(pair, tf, OP_SELL);
-            if(buys == 0 || sells > 0) ExecuteTrade(pair, tf, OP_BUY, p, i);
+            // Open BUY if: no buys yet (first order), OR sells exist AND hedge limit not reached
+            if(buys == 0 || (sells > 0 && buys < MaxHedgeOrders)) {
+               ExecuteTrade(pair, tf, OP_BUY, p, i);
+            }
          }
 
 
          if(scanSell && triggerSell) {
-            int buys = CountTrades(pair, tf, OP_BUY);
+            int buys  = CountTrades(pair, tf, OP_BUY);
             int sells = CountTrades(pair, tf, OP_SELL);
-            if(sells == 0 || buys > 0) ExecuteTrade(pair, tf, OP_SELL, p, i);
+            // Open SELL if: no sells yet (first order), OR buys exist AND hedge limit not reached
+            if(sells == 0 || (buys > 0 && sells < MaxHedgeOrders)) {
+               ExecuteTrade(pair, tf, OP_SELL, p, i);
+            }
          }
       }
    }
@@ -249,6 +265,7 @@ void OnTick()
 
 //+------------------------------------------------------------------+
 //| EXECUTION (60 PIP SL, 180 PIP TP)                                |
+//| FIX #1: Comment format changed to KL_<TF>_<TYPE>                |
 //+------------------------------------------------------------------+
 void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
 {
@@ -279,7 +296,8 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
    lot = MathMax(MarketInfo(pair, MODE_MINLOT), MathMin(MarketInfo(pair, MODE_MAXLOT), lot));
 
 
-   string comment = StringFormat("KL_%d_%d", type, tf);
+   // FIX #1: Format changed from KL_type_tf to KL_tf_type for correct parsing
+   string comment = StringFormat("KL_%d_%d", tf, type);
    int ticket = OrderSend(pair, type, lot, price, Slippage, sl, tp, comment, MagicNumber, 0, type == OP_BUY ? clrBlue : clrRed);
    
    if(ticket > 0) {
