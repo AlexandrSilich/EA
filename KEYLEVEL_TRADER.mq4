@@ -99,13 +99,38 @@ bool CheckAndExecuteDailyTarget()
 
 void CloseAllOpenTrades()
 {
+   int maxRetries = 3;
+
    for(int i = OrdersTotal() - 1; i >= 0; i--) {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderMagicNumber() != MagicNumber) continue;
-      if(OrderType() == OP_BUY)
-         OrderClose(OrderTicket(), OrderLots(), MarketInfo(OrderSymbol(), MODE_BID), Slippage, clrGreen);
-      else if(OrderType() == OP_SELL)
-         OrderClose(OrderTicket(), OrderLots(), MarketInfo(OrderSymbol(), MODE_ASK), Slippage, clrGreen);
+
+      bool closed = false;
+      for(int attempt = 1; attempt <= maxRetries; attempt++) {
+         RefreshRates(); // актуализируем цены перед каждой попыткой
+
+         double closePrice = (OrderType() == OP_BUY)
+            ? MarketInfo(OrderSymbol(), MODE_BID)
+            : MarketInfo(OrderSymbol(), MODE_ASK);
+
+         if(OrderClose(OrderTicket(), OrderLots(), closePrice, Slippage, clrGreen)) {
+            closed = true;
+            break;
+         }
+
+         int err = GetLastError();
+         Print("Close attempt ", attempt, " failed. Ticket: ", OrderTicket(),
+               " Error: ", err);
+
+         // Пауза перед retry (только для retriable ошибок)
+         if(err == ERR_OFF_QUOTES || err == ERR_REQUOTE || err == ERR_PRICE_CHANGED)
+            Sleep(500);
+         else
+            break; // фатальная ошибка — не повторяем
+      }
+
+      if(!closed)
+         Print("WARNING: Failed to close ticket ", OrderTicket(), " after ", maxRetries, " attempts.");
    }
 }
 
