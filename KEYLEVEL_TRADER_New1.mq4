@@ -4,10 +4,12 @@
 //|          + Elastic ATR Trailing + Volatility Pulse Filter        |
 //|          Based on KEYLEVEL_TRADER V1.3                           |
 //|          NEW: Intelligent early exit, no classic SL waiting      |
+//|          v2.1: Fixed VolatilityATR threshold, SARBetrayal>=2,    |
+//|               ElasticTrailing uses order TF (not hardcoded M15)  |
 //+------------------------------------------------------------------+
 #property copyright "KEYLEVEL TRADER New1 Strategy"
 #property link      ""
-#property version   "2.00"
+#property version   "2.10"
 #property strict
 
 // =========================================================
@@ -30,36 +32,37 @@ extern int    MaxHedgeOrders   = 1;
 // =========================================================
 
 // --- [1] SAR Betrayal Score ---
-// Если SAR перевернулся против сделки N баров подряд — ранний выход
-extern int    SARBetrayalBars         = 3;    // сколько баров SAR должен "предать" для выхода
-extern double SARBetrayalMinPips      = 5.0;  // минимальное расстояние SAR от цены (фильтр шума)
+// Если SAR перевернулся против сделки — ранний выход
+// FIX v2.1: условие сработки >= 2 (не >= SARBetrayalBars),
+//           чтобы 1 шумовой бар не блокировал весь сигнал
+extern int    SARBetrayalBars         = 3;    // сколько баров проверяем
+extern double SARBetrayalMinPips      = 5.0;  // мин. расстояние SAR от цены (фильтр шума)
 
 // --- [2] Momentum Death Signal ---
-// Измеряем скорость изменения цены через разницу EMA(fast) - EMA(slow)
-// Если моментум разворачивается против нас ДО достижения даже 0.5*SL — выходим
-extern int    MomFastEMA              = 5;    // быстрая EMA для моментума
-extern int    MomSlowEMA              = 13;   // медленная EMA для моментума
-extern int    MomDeathBars            = 4;    // сколько баров моментум должен умирать подряд
-extern double MomDeathMinPipsLoss     = 8.0;  // не выходим если убыток < этого значения (не реагируем на шум)
-extern double MomDeathMaxPipsLoss     = 35.0; // выходим принудительно если убыток > этого значения
+extern int    MomFastEMA              = 5;
+extern int    MomSlowEMA              = 13;
+extern int    MomDeathBars            = 4;
+extern double MomDeathMinPipsLoss     = 8.0;
+extern double MomDeathMaxPipsLoss     = 35.0;
 
 // --- [3] Elastic ATR Trailing Stop ---
+// FIX v2.1: трейлинг теперь использует TF самого ордера, не хардкод M15
 extern bool   UseElasticTrailing      = true;
 extern int    ATR_Period              = 14;
-extern double ATR_MultiplierFast      = 1.2;  // мультипликатор в сильном тренде (широкий трейлинг)
-extern double ATR_MultiplierSlow      = 0.7;  // мультипликатор при замедлении (сжимаем трейлинг)
-extern int    TrendStrengthBars       = 8;    // сколько баров смотрим для оценки силы тренда
-extern double TrailingActivationPips  = 20.0; // активируем трейлинг только после этого профита в пипсах
+extern double ATR_MultiplierFast      = 1.2;
+extern double ATR_MultiplierSlow      = 0.7;
+extern int    TrendStrengthBars       = 8;
+extern double TrailingActivationPips  = 20.0;
 
 // --- [4] Volatility Pulse Filter ---
-// Если ATR упал ниже порога — рынок "умер", выходим из убыточных позиций быстрее
+// FIX v2.1: порог поднят с 0.0003 до 0.0006 (реалистично для EURUSD M15)
+// ATR(14) на M15 EURUSD в норме = 0.0008–0.0020, при 0.0003 ложные срабатывания
 extern bool   UseVolatilityPulse      = true;
-extern double VolatilityDeadZoneATR   = 0.0003; // если ATR(14) < этого — рынок "мертв" (для EURUSD ~0.3 pips)
-extern int    VolatilityDeadBarsMin   = 5;       // сколько баров рынок должен быть мертв подряд
+extern double VolatilityDeadZoneATR   = 0.0006; // ~6 pips для 5-знак. пар — реальный "мертвый" рынок
+extern int    VolatilityDeadBarsMin   = 5;
 
 // --- [5] Hard Emergency Exit ---
-// Если убыток превысил этот порог (в пипсах) — немедленный выход без ожидания SL
-extern double EmergencyExitPips       = 45.0;   // аварийный выход до SL (SL остается как страховка)
+extern double EmergencyExitPips       = 45.0;
 
 // =========================================================
 // GLOBAL VARIABLES
@@ -87,7 +90,7 @@ int OnInit()
    DailyTargetHits     = 0;
    TradingLockedForDay = false;
    CircleStartEquity   = AccountBalance();
-   Print("KEYLEVEL_TRADER_New1 v2.0 Initialized. SmartExit Engine ACTIVE. CircleEquity: ", CircleStartEquity);
+   Print("KEYLEVEL_TRADER_New1 v2.1 Initialized. SmartExit Engine ACTIVE. CircleEquity: ", CircleStartEquity);
    return(INIT_SUCCEEDED);
 }
 void OnDeinit(const int reason) {}
@@ -154,7 +157,6 @@ void CloseAllOpenTrades()
    }
 }
 
-// Закрыть конкретный ордер с сообщением причины
 bool CloseOrderByTicket(int ticket, string reason)
 {
    if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) return false;
@@ -184,6 +186,25 @@ bool CloseOrderByTicket(int ticket, string reason)
       else break;
    }
    return false;
+}
+
+// =========================================================
+// Извлечь TF из комментария ордера формата "KLN_TF_TYPE"
+// Возвращает PERIOD_M15 если парсинг не удался (safe fallback)
+// =========================================================
+int GetOrderTF(string comment)
+{
+   // формат: KLN_60_0 или KLN_15_1
+   int pos1 = StringFind(comment, "_");
+   int pos2 = StringFind(comment, "_", pos1 + 1);
+   if(pos1 < 0 || pos2 < 0) return PERIOD_M15;
+
+   int tf = (int)StringToInteger(StringSubstr(comment, pos1 + 1, pos2 - pos1 - 1));
+   if(tf == 5)  return PERIOD_M5;
+   if(tf == 15) return PERIOD_M15;
+   if(tf == 30) return PERIOD_M30;
+   if(tf == 60) return PERIOD_H1;
+   return PERIOD_M15; // fallback
 }
 
 //+------------------------------------------------------------------+
@@ -281,13 +302,10 @@ void OnTick()
    if(TradingLockedForDay) return;
    if(CheckAndExecuteDailyTarget()) return;
 
-   // SmartExit Engine — проверяем ВСЕ открытые ордера
    SmartExitEngine();
 
-   // Elastic ATR Trailing
    if(UseElasticTrailing) ElasticATRTrailing();
 
-   // Открываем новые ордера
    for(int p = 0; p < ArraySize(PairsList); p++) {
       string pair = PairsList[p];
       if(MarketInfo(pair, MODE_BID) <= 0) continue;
@@ -367,8 +385,6 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
 
 // =========================================================
 // *** SMART EXIT ENGINE ***
-// Логика: несколько независимых сигналов выхода.
-// Достаточно ОДНОГО сработавшего — ордер закрывается.
 // =========================================================
 void SmartExitEngine()
 {
@@ -376,10 +392,10 @@ void SmartExitEngine()
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderMagicNumber() != MagicNumber) continue;
 
-      string pair  = OrderSymbol();
-      int    type  = OrderType();
+      string pair   = OrderSymbol();
+      int    type   = OrderType();
       int    ticket = OrderTicket();
-      double entry = OrderOpenPrice();
+      double entry  = OrderOpenPrice();
 
       double pip = (MarketInfo(pair, MODE_DIGITS) == 3 || MarketInfo(pair, MODE_DIGITS) == 5) ?
                    MarketInfo(pair, MODE_POINT) * 10 : MarketInfo(pair, MODE_POINT);
@@ -387,10 +403,9 @@ void SmartExitEngine()
       double bid = MarketInfo(pair, MODE_BID);
       double ask = MarketInfo(pair, MODE_ASK);
 
-      // Текущий P&L в пипсах
       double currentPnlPips = (type == OP_BUY) ? (bid - entry) / pip : (entry - ask) / pip;
 
-      // --- [5] Emergency Exit (первым — самый важный) ---
+      // --- [5] Emergency Exit ---
       if(currentPnlPips <= -EmergencyExitPips) {
          CloseOrderByTicket(ticket, "EMERGENCY_" + DoubleToString(currentPnlPips, 1) + "pips");
          continue;
@@ -405,7 +420,7 @@ void SmartExitEngine()
       }
 
       // --- [1] SAR Betrayal Score ---
-      if(currentPnlPips <= -MomDeathMinPipsLoss) { // только если уже в минусе
+      if(currentPnlPips <= -MomDeathMinPipsLoss) {
          if(SARBetrayalDetected(pair, PERIOD_M15, type, pip)) {
             CloseOrderByTicket(ticket, "SAR_BETRAYAL");
             continue;
@@ -424,7 +439,8 @@ void SmartExitEngine()
 
 //+------------------------------------------------------------------+
 //| [1] SAR Betrayal Detector                                        |
-//| SAR "предает" направление N баров подряд                         |
+//| FIX v2.1: срабатывает при betrayCount >= 2 (не >= SARBetrayalBars)|
+//| Один шумовой бар (filtered by MinPips) не блокирует сигнал       |
 //+------------------------------------------------------------------+
 bool SARBetrayalDetected(string pair, int tf, int orderType, double pip)
 {
@@ -437,18 +453,18 @@ bool SARBetrayalDetected(string pair, int tf, int orderType, double pip)
       double mid  = (high + low) / 2.0;
 
       double sarDistPips = MathAbs(sar - mid) / pip;
-      if(sarDistPips < SARBetrayalMinPips) continue; // слишком близко — шум
+      if(sarDistPips < SARBetrayalMinPips) continue; // шумовой бар — пропускаем
 
-      if(orderType == OP_BUY && sar > high) betrayCount++;   // SAR над ценой при BUY — предательство
-      if(orderType == OP_SELL && sar < low)  betrayCount++;  // SAR под ценой при SELL — предательство
+      if(orderType == OP_BUY  && sar > high) betrayCount++;
+      if(orderType == OP_SELL && sar < low)  betrayCount++;
    }
 
-   return (betrayCount >= SARBetrayalBars);
+   // FIX: достаточно 2 баров "предательства" из SARBetrayalBars проверенных
+   return (betrayCount >= 2);
 }
 
 //+------------------------------------------------------------------+
 //| [2] Momentum Death Signal                                        |
-//| EMA-momentum разворачивается против нас N баров подряд           |
 //+------------------------------------------------------------------+
 bool MomentumDying(string pair, int tf, int orderType)
 {
@@ -463,9 +479,7 @@ bool MomentumDying(string pair, int tf, int orderType)
       double momNow  = fastEMA_now  - slowEMA_now;
       double momPrev = fastEMA_prev - slowEMA_prev;
 
-      // Для BUY: моментум должен расти. Если падает — "умирает"
       if(orderType == OP_BUY  && momNow < momPrev) deathCount++;
-      // Для SELL: моментум должен падать. Если растет — "умирает"
       if(orderType == OP_SELL && momNow > momPrev) deathCount++;
    }
 
@@ -473,7 +487,7 @@ bool MomentumDying(string pair, int tf, int orderType)
 }
 
 //+------------------------------------------------------------------+
-//| [4] Volatility Pulse: проверка "мертвого рынка"                  |
+//| [4] Volatility Pulse                                             |
 //+------------------------------------------------------------------+
 bool IsMarketDead(string pair, int tf)
 {
@@ -489,8 +503,8 @@ bool IsMarketDead(string pair, int tf)
 
 // =========================================================
 // *** ELASTIC ATR TRAILING STOP ***
-// Трейлинг динамически сжимается при замедлении тренда
-// и расширяется при сильном движении
+// FIX v2.1: использует TF ордера из комментария, не хардкод M15
+// H1-ордер получает ATR по H1, M15-ордер — по M15 и т.д.
 // =========================================================
 void ElasticATRTrailing()
 {
@@ -504,6 +518,9 @@ void ElasticATRTrailing()
       double currentSL = OrderStopLoss();
       double currentTP = OrderTakeProfit();
 
+      // FIX: берём TF из комментария ордера
+      int    orderTF   = GetOrderTF(OrderComment());
+
       double pip = (MarketInfo(pair, MODE_DIGITS) == 3 || MarketInfo(pair, MODE_DIGITS) == 5) ?
                    MarketInfo(pair, MODE_POINT) * 10 : MarketInfo(pair, MODE_POINT);
 
@@ -512,33 +529,25 @@ void ElasticATRTrailing()
 
       double currentPnlPips = (type == OP_BUY) ? (bid - entry) / pip : (entry - ask) / pip;
 
-      // Активируем трейлинг только после достижения порога профита
       if(currentPnlPips < TrailingActivationPips) continue;
 
-      // Получаем ATR текущего бара и считаем силу тренда
-      double atrNow = iATR(pair, PERIOD_M15, ATR_Period, 1);
+      // ATR и сила тренда по TF самого ордера
+      double atrNow = iATR(pair, orderTF, ATR_Period, 1);
       if(atrNow <= 0) continue;
 
-      double trendStrength = GetTrendStrength(pair, PERIOD_M15, type);
-
-      // Выбираем мультипликатор динамически
-      // trendStrength [0..1]: 1 = сильный тренд, 0 = слабый/боковик
-      double dynamicMult = ATR_MultiplierSlow + trendStrength * (ATR_MultiplierFast - ATR_MultiplierSlow);
-
+      double trendStrength = GetTrendStrength(pair, orderTF, type);
+      double dynamicMult   = ATR_MultiplierSlow + trendStrength * (ATR_MultiplierFast - ATR_MultiplierSlow);
       double trailingDistance = atrNow * dynamicMult;
 
       if(type == OP_BUY) {
          double newSL = NormalizeDouble(bid - trailingDistance, (int)MarketInfo(pair, MODE_DIGITS));
-         // SL только вверх (никогда не опускаем)
          if(newSL > currentSL && newSL < bid) {
-            // Не опускаем ниже entry (защита капитала)
             if(newSL < entry) newSL = entry;
             OrderModify(OrderTicket(), entry, newSL, currentTP, 0, clrCyan);
          }
       }
       else if(type == OP_SELL) {
          double newSL = NormalizeDouble(ask + trailingDistance, (int)MarketInfo(pair, MODE_DIGITS));
-         // SL только вниз (никогда не поднимаем)
          if((newSL < currentSL || currentSL == 0) && newSL > ask) {
             if(newSL > entry) newSL = entry;
             OrderModify(OrderTicket(), entry, newSL, currentTP, 0, clrCyan);
@@ -549,7 +558,6 @@ void ElasticATRTrailing()
 
 //+------------------------------------------------------------------+
 //| Оценка силы тренда [0.0 .. 1.0]                                  |
-//| Считаем долю баров которые двигались в направлении ордера        |
 //+------------------------------------------------------------------+
 double GetTrendStrength(string pair, int tf, int orderType)
 {
@@ -563,7 +571,7 @@ double GetTrendStrength(string pair, int tf, int orderType)
       if(orderType == OP_SELL && close < open) alignedBars++;
    }
 
-   return (double)alignedBars / (double)TrendStrengthBars; // от 0 до 1
+   return (double)alignedBars / (double)TrendStrengthBars;
 }
 
 //+------------------------------------------------------------------+
