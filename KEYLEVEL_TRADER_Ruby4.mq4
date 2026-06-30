@@ -33,7 +33,7 @@
 // =========================================================
 
 // --- Risk & Equity Management ---
-extern bool   UseDailyEquityTarget     = true;
+extern bool   UseDailyEquityTarget     = false;
 extern double DailyProfitTargetPercent = 5.0;
 extern int    MaxCountCircles          = 2;
 
