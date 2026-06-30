@@ -35,7 +35,7 @@ extern double DailyProfitTargetPercent = 5.0;
 extern int    MaxCountCircles          = 2;
 
 // --- Trade Management ---
-extern int    MagicNumber      = 20260630;
+extern int    MagicNumber      = 777777777;
 extern int    Slippage         = 3;
 extern double MaxSpreadPips    = 3.0;
 extern int    MaxHedgeOrders   = 1;
