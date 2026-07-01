@@ -87,6 +87,11 @@ extern int    DI_Period          = 14;
 extern int    EntryATRPeriod     = 14;
 extern double EntryMinATRpips    = 5.0;   // ATR(1 бар) ниже -> не входим
 
+// Онлайн-подтверждение направления (цена реально идёт в сторону входа)
+extern bool   UseEntryMomentumFilter = true;
+extern int    EntryConfirmTF         = 1;   // ТФ подтверждения в минутах: 1=M1, 5=M5 ...
+extern int    EntryConfirmLookback   = 1;   // сколько ЗАКРЫТЫХ баров этого ТФ смотреть
+
 // Трендовый режим (follow)
 extern int    TrendEMAFast       = 21;
 extern int    TrendEMASlow       = 50;
@@ -600,12 +605,39 @@ void OnTick()
    }
 }
 
+// =========================================================
+// Онлайн-подтверждение направления по ТЕКУЩЕЙ цене.
+// Сигнал считается по закрытым барам -> цена могла успеть
+// развернуться. Требуем микропробой в сторону входа:
+//   BUY  -> Ask > максимума последних N закрытых баров EntryConfirmTF
+//   SELL -> Bid < минимума   последних N закрытых баров EntryConfirmTF
+// =========================================================
+bool EntryDirectionConfirmed(string pair, int type)
+{
+   if(!UseEntryMomentumFilter) return true;
+   int ctf = EntryConfirmTF;
+   int lb  = MathMax(1, EntryConfirmLookback);
+
+   if(type == OP_BUY) {
+      double hh = HighestHigh(pair, ctf, lb, 1);
+      return (MarketInfo(pair, MODE_ASK) > hh);
+   } else {
+      double ll = LowestLow(pair, ctf, lb, 1);
+      return (MarketInfo(pair, MODE_BID) < ll);
+   }
+}
+
 void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
 {
    double pip = PipOf(pair);
 
+   if(!EntryDirectionConfirmed(pair, type)) {
+    //  Print("Ruby5: Entry BLOCKED (online direction not confirmed) | ", pair, " TF:", tf, " type:", type); // Too many spam
+      return;
+   }
+
    if(SARBetrayalDetected(pair, tf, type, pip)) {
-     // Print("Ruby4: Entry BLOCKED (SAR already betraying) | ", pair, " TF:", tf, " type:", type); // Слишком много информирований, спама в терминале
+      //Print("Ruby5: Entry BLOCKED (SAR already betraying) | ", pair, " TF:", tf, " type:", type); // Too many spam
       return;
    }
 
@@ -614,8 +646,7 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
       double atr    = iATR(pair, tf, ATR_Period, 1);
       double rawStop = (atr / pip) * StopATRMult;
       if(rawStop < MinStopPips) {
-        // Print("Ruby4: Entry BLOCKED (ATR stop ", DoubleToString(rawStop,1), " < MinStop ", DoubleToString(MinStopPips,1), ") | ", pair, " TF:", tf); // Слишком много информирований, спама в терминале
-      return;
+        // Print("Ruby5: Entry BLOCKED (ATR stop ", DoubleToString(rawStop,1), " < MinStop ", DoubleToString(MinStopPips,1), ") | ", pair, " TF:", tf); // Too many spam
          return;
       }
       stopPips = MathMax(MinStopPips, MathMin(MaxStopPips, rawStop));
@@ -660,7 +691,7 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
    int ticket = OrderSend(pair, type, lot, price, Slippage, sl, tp, comment, MagicNumber, 0, type == OP_BUY ? clrBlue : clrRed);
    if(ticket > 0) {
       LastTradeTime[pIndex][tfIndex] = iTime(pair, tf, 0);
-      Print("Ruby4 Opened ", type == OP_BUY ? "BUY" : "SELL", " | ", pair, " TF:", tf, " Lot:", lot, " Stop:", DoubleToString(stopPips,1), "pip");
+      Print("Ruby5 Opened ", type == OP_BUY ? "BUY" : "SELL", " | ", pair, " TF:", tf, " Lot:", lot, " Stop:", DoubleToString(stopPips,1), "pip");
    }
 }
 
