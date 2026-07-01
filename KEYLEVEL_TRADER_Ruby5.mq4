@@ -605,7 +605,7 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
    double pip = PipOf(pair);
 
    if(SARBetrayalDetected(pair, tf, type, pip)) {
-      Print("Ruby4: Entry BLOCKED (SAR already betraying) | ", pair, " TF:", tf, " type:", type);
+      Print("Ruby5: Entry BLOCKED (SAR already betraying) | ", pair, " TF:", tf, " type:", type);
       return;
    }
 
@@ -614,7 +614,7 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
       double atr    = iATR(pair, tf, ATR_Period, 1);
       double rawStop = (atr / pip) * StopATRMult;
       if(rawStop < MinStopPips) {
-         Print("Ruby4: Entry BLOCKED (ATR stop ", DoubleToString(rawStop,1), " < MinStop ", DoubleToString(MinStopPips,1), ") | ", pair, " TF:", tf);
+         Print("Ruby5: Entry BLOCKED (ATR stop ", DoubleToString(rawStop,1), " < MinStop ", DoubleToString(MinStopPips,1), ") | ", pair, " TF:", tf);
          return;
       }
       stopPips = MathMax(MinStopPips, MathMin(MaxStopPips, rawStop));
@@ -659,7 +659,7 @@ void ExecuteTrade(string pair, int tf, int type, int pIndex, int tfIndex)
    int ticket = OrderSend(pair, type, lot, price, Slippage, sl, tp, comment, MagicNumber, 0, type == OP_BUY ? clrBlue : clrRed);
    if(ticket > 0) {
       LastTradeTime[pIndex][tfIndex] = iTime(pair, tf, 0);
-      Print("Ruby4 Opened ", type == OP_BUY ? "BUY" : "SELL", " | ", pair, " TF:", tf, " Lot:", lot, " Stop:", DoubleToString(stopPips,1), "pip");
+      Print("Ruby5 Opened ", type == OP_BUY ? "BUY" : "SELL", " | ", pair, " TF:", tf, " Lot:", lot, " Stop:", DoubleToString(stopPips,1), "pip");
    }
 }
 
